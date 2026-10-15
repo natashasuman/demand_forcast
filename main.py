@@ -10,27 +10,18 @@ from src.models.train_prophet import ProphetForecaster
 from src.tracking.mlflow_registry import SageMakerRegistrar
 
 
-def load_or_generate_data(csv_path: str = "data/raw_sales_data.csv") -> pd.DataFrame:
-    """Loads existing raw sales CSV or generates a synthetic series if missing."""
+def load_or_fetch_data(csv_path: str = "data/raw_sales_data.csv") -> pd.DataFrame:
+    """Loads existing raw sales CSV or downloads and processes real UCI Online Retail data if missing."""
     if os.path.exists(csv_path):
         print(f"[+] Ingesting data from {csv_path}")
         df = pd.read_csv(csv_path)
         df["date"] = pd.to_datetime(df["date"])
         return df
 
-    print("[!] Raw data file not found, generating synthetic series...")
-    dates = pd.date_range(start="2023-01-01", periods=730, freq="D")
-    np.random.seed(42)
-    trend = np.linspace(50, 120, len(dates))
-    seasonality = np.sin(np.linspace(0, 4 * np.pi, len(dates))) * 25
-    weekend_bump = (dates.dayofweek >= 5).astype(int) * 15
-    noise = np.random.normal(0, 5, len(dates))
-    sales = np.maximum(10, trend + seasonality + weekend_bump + noise)
-
-    df = pd.DataFrame({"date": dates, "sales": np.round(sales, 2)})
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    df.to_csv(csv_path, index=False)
-    return df
+    print(f"[!] Raw data file '{csv_path}' not found.")
+    print("[+] Extracting and processing real-world UCI Online Retail dataset...")
+    from data.download_uci_retail import download_and_process_uci_retail
+    return download_and_process_uci_retail(output_path=csv_path)
 
 
 def run_pipeline(dry_run_registry: bool = True):
@@ -39,7 +30,7 @@ def run_pipeline(dry_run_registry: bool = True):
     print("=" * 60)
 
     # 1. Ingestion
-    raw_df = load_or_generate_data()
+    raw_df = load_or_fetch_data()
 
     # 2. Sequential Train/Test Split (80/20 chronological split)
     train_size = int(len(raw_df) * 0.8)

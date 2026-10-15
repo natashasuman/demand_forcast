@@ -1,4 +1,3 @@
-# demand_forcast
 # Enterprise Multi-Model Demand Forecasting Engine
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
@@ -6,7 +5,7 @@
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![AWS SageMaker](https://img.shields.io/badge/MLOps-AWS%20SageMaker-FF9900.svg)](https://aws.amazon.com/sagemaker/)
 
-Production-grade multi-model time-series forecasting and MLOps pipeline. The system trains statistical (**ARIMA**), additive (**Prophet**), and gradient-boosted (**LightGBM**) models in parallel, logs experiments with **MLflow**, benchmarks candidate runs via **WAPE** (Weighted Absolute Percentage Error), and registers champion models on **AWS SageMaker Model Registry**.
+Production-grade multi-model time-series forecasting and MLOps pipeline. The system trains statistical (**ARIMA**), additive (**Prophet**), and gradient-boosted (**LightGBM**) models in parallel on real-world retail transactions, logs experiments with **MLflow**, benchmarks candidate runs via **WAPE** (Weighted Absolute Percentage Error), and registers champion models on **AWS SageMaker Model Registry**.
 
 ---
 
@@ -14,19 +13,25 @@ Production-grade multi-model time-series forecasting and MLOps pipeline. The sys
 
 ```mermaid
 flowchart TD
-    subgraph INGESTION["1. Data Ingestion & Storage"]
-        CSV[("Raw Demand Data<br/>data/raw_sales_data.csv<br/>730 Daily Observations")]
-        SPLIT["Chronological Split<br/>(80% Train / 20% Test)"]
-        CSV --> SPLIT
+    subgraph INGESTION["1. Open-Source Ingestion & ETL"]
+        UCI["UCI Machine Learning Repository<br/>Online Retail (541,909 Transactions)"]
+        ETL["Automated ETL Pipeline<br/>data/download_uci_retail.py"]
+        CLEAN["Filter Returns & Cancellations<br/>InvoiceNo starts with 'C' | Quantity <= 0"]
+        AGG["Daily Aggregation & Regularization<br/>sales = sum(Quantity) | asfreq('D')"]
+        CSV[("Processed Demand Series<br/>data/raw_sales_data.csv")]
+
+        UCI --> ETL --> CLEAN --> AGG --> CSV
     end
 
     subgraph FEATURES["2. Feature Engineering Pipeline"]
+        SPLIT["Chronological Split<br/>(80% Train / 20% Test)"]
         FE["TimeSeriesFeatureEngine"]
         CAL["Calendar Indicators<br/>(dayofweek, month, quarter)"]
         FOURIER["Fourier Terms<br/>(Annual Seasonality)"]
         LAGS["Lag Variables<br/>(t-1, t-7, t-14, t-30)"]
         ROLL["Shifted Rolling Stats<br/>(7, 14, 30 days Mean/Std)"]
-        SPLIT --> FE
+
+        CSV --> SPLIT --> FE
         FE --> CAL
         FE --> FOURIER
         FE --> LAGS
@@ -67,28 +72,50 @@ flowchart TD
 
 ---
 
-## 📊 Dataset Specification
+## 📊 Dataset Specification & Extraction Pipeline
 
-### What dataset is used?
-The pipeline uses **`data/raw_sales_data.csv`**, a 2-year daily time-series demand dataset spanning **730 days** (2023-01-01 to 2024-12-30).
+### Source Dataset
+The pipeline uses the **[UCI Machine Learning Repository: Online Retail Dataset](https://archive.ics.uci.edu/dataset/352/online+retail)** (Dataset ID: 352).
 
-- **File Path:** [`data/raw_sales_data.csv`](file:///C:/BetaProj/Project/demand_forcast/data/raw_sales_data.csv)
-- **Generator Script:** [`data/generate_data.py`](file:///C:/BetaProj/Project/demand_forcast/data/generate_data.py)
+- **Data Origin:** Real transactional records from a UK-based registered non-store online retail enterprise selling unique all-occasion giftware (wholesalers & individual consumers).
+- **Time Horizon:** 01/12/2010 to 09/12/2011.
+- **Raw Volume:** 541,909 individual purchase transaction rows.
+- **Automated Extractor:** [`data/download_uci_retail.py`](file:///C:/BetaProj/Project/demand_forcast/data/download_uci_retail.py)
 
-### Schema:
+---
+
+### How the Data is Extracted and Formatted
+
+Rather than using synthetic series, [`data/download_uci_retail.py`](file:///C:/BetaProj/Project/demand_forcast/data/download_uci_retail.py) automatically downloads and extracts the raw transactions directly from the UCI repository:
+
+```
+UCI Zip Archive (online+retail.zip)
+       │
+       ▼
+Extract 'Online Retail.xlsx' (541k+ transactions)
+       │
+       ▼
+Filter Cancellations (`InvoiceNo` starts with 'C' or `Quantity` <= 0)
+       │
+       ▼
+Aggregate to Daily Granularity (`sales = sum(Quantity)`)
+       │
+       ▼
+Fill Calendar Gaps (`asfreq('D')` to establish continuous time series)
+       │
+       ▼
+Export to `data/raw_sales_data.csv`
+```
+
+#### Final Demand Schema (`data/raw_sales_data.csv`):
 | Column | Type | Description | Example |
 | :--- | :--- | :--- | :--- |
-| `date` | `string` (`YYYY-MM-DD`) | Daily timestamp index | `2023-01-01` |
-| `sales` | `float` | Units sold / demand volume | `64.21` |
+| `date` | `string` (`YYYY-MM-DD`) | Continuous daily calendar date | `2010-12-01` |
+| `sales` | `float` | Total aggregated units demanded | `26814.00` |
 
-### Statistical Characteristics:
-1. **Macro Trend:** Linear baseline expansion ($\mu = 50 \to 120$ units over the 2-year horizon).
-2. **Annual Seasonality:** Multi-cycle sinusoidal seasonality simulating seasonal purchasing patterns ($\pm 25$ amplitude).
-3. **Weekly Seasonality:** Day-of-week pattern introducing predictable $+15$ demand spikes on weekends (Saturday/Sunday).
-4. **Stochastic Noise:** Gaussian disturbance $\mathcal{N}(0, 6)$ to test model robustness against real-world variance.
-5. **Leakage Protection:** Chronological split (first 80% train, last 20% test); all rolling features shifted by 1 ($t-1$) to eliminate lookahead bias.
-
-*Note: The system is modular. You can replace `data/raw_sales_data.csv` with real POS/ERP exports (e.g. Walmart M5, Rossmann, or internal warehouse demand logs) without changing model code.*
+#### Leakage-Free Design:
+- **Strict Chronological Split:** The first 80% of dates are used for model training; the subsequent 20% are held out for out-of-sample benchmarking. No random shuffling.
+- **Shifted Feature Generation:** Lags and rolling window statistics (7, 14, 30 days) are computed strictly with a `shift(1)` offset to eliminate lookahead bias.
 
 ---
 
@@ -96,8 +123,8 @@ The pipeline uses **`data/raw_sales_data.csv`**, a 2-year daily time-series dema
 
 ```text
 ├── data/
-│   ├── generate_data.py          # Synthetic dataset generator
-│   └── raw_sales_data.csv        # Historical daily demand dataset (730 days)
+│   ├── download_uci_retail.py    # Downloads & processes real-world UCI dataset
+│   └── raw_sales_data.csv        # Extracted daily demand time-series
 ├── src/
 │   ├── __init__.py
 │   ├── config.py                 # Centralized Pydantic settings & env config
@@ -136,12 +163,19 @@ uv venv --python 3.12
 uv pip install -r requirements.txt
 ```
 
-### 2. Run the Multi-Model Forecasting Pipeline
+### 2. Download Real-Life Dataset (Optional / Auto-fetched)
+To download and prepare the UCI Online Retail dataset:
+```powershell
+.venv\Scripts\python.exe data\download_uci_retail.py
+```
+*(If `data/raw_sales_data.csv` is absent when running `main.py`, it will automatically download and process it for you).*
+
+### 3. Run the Multi-Model Forecasting Pipeline
 ```powershell
 .venv\Scripts\python.exe main.py
 ```
 This executes:
-1. Ingestion of `data/raw_sales_data.csv` (730 rows).
+1. Ingestion of real-world demand from `data/raw_sales_data.csv`.
 2. Chronological 80/20 train/test split.
 3. Feature engineering (calendar, Fourier harmonics, lags $t-1, t-7, t-14, t-30$, rolling windows $7, 14, 30$).
 4. Parallel training of **ARIMA**, **Prophet**, and **LightGBM**.
@@ -149,18 +183,18 @@ This executes:
 6. Model selection leaderboard ranking by **WAPE (%)**.
 7. AWS SageMaker Model Registry registration hook for the champion.
 
-### 3. Launch MLflow UI
+### 4. Launch MLflow UI
 ```powershell
-mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+.venv\Scripts\mlflow.exe ui --backend-store-uri sqlite:///mlflow.db --port 5000
 ```
 Open [http://localhost:5000](http://localhost:5000) to inspect runs, parameters, metrics, and logged model artifacts.
 
-### 4. Run Unit Tests
+### 5. Run Unit Tests
 ```powershell
 .venv\Scripts\pytest.exe -v
 ```
 
-### 5. Launch FastAPI Serving Endpoint
+### 6. Launch FastAPI Serving Endpoint
 ```powershell
 .venv\Scripts\uvicorn.exe src.api:app --reload --port 8000
 ```
